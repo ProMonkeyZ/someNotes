@@ -1,0 +1,4 @@
+# instrument - UIAutomation
+在iOS自动化测试中,我们可以使用Xcode自带工具instrument中的UIAutomation进行自动化测试.
+
+在前期的准备中,我们要给代码中可响应点击事件的控件accessibilityIdentifier进行赋值.然后借助accessibility inspector工具可以查看界面元素的accessibilityIdentifier,然后编写脚本进行自动化测试.

@@ -1,5 +1,5 @@
 ### 1.什么是RunLoop
-RunLoop从字面解释来看就是不停的转圈,是个循环.
+RunLoop从字面解释来看就是运行循环.
 就如同要在c语言中实现一个可持续执行的应用程序一样,需要用像:
 ```
 int main () {
@@ -107,3 +107,142 @@ CFRunLoopRef CFRunLoopGetMain(void) {
 2. 如果输入源启动,传递相应的消息
 3. 如果 run loop 被显式唤醒而且时间还没超时,重启 run loop。进入步骤 2
 ##### 10. 通知观察者run loop 结束
+
+### 5.RunLoop的应用:
+* scrollView滑动的时候,timer中的事件不执行.
+原因是当我们滑动scrollView时，主线程的RunLoop 会切换到UITrackingRunLoopMode这个Mode，执行的也是UITrackingRunLoopMode下的任务（Mode中的item），而timer 是添加在NSDefaultRunLoopMode下的，所以timer任务并不会执行，只有当UITrackingRunLoopMode的任务执行完毕，runloop切换到NSDefaultRunLoopMode后，才会继续执行timer。
+* 检查主线程的卡顿
+
+> 官方文档对runloop的运行顺序解释如下:
+
+```
+1. Notify observers that the run loop has been entered.
+2. Notify observers that any ready timers are about to fire.
+3. Notify observers that any input sources that are not port based are about to fire.
+4. Fire any non-port-based input sources that are ready to fire.
+5. If a port-based input source is ready and waiting to fire, process the event immediately. Go to step 9.
+6. Notify observers that the thread is about to sleep.
+7. Put the thread to sleep until one of the following events occurs:
+ * An event arrives for a port-based input source.
+ * A timer fires.
+ * The timeout value set for the run loop expires.
+ * The run loop is explicitly woken up.
+8. Notify observers that the thread just woke up.
+9. Process the pending event.
+ * If a user-defined timer fired, process the timer event and restart the loop. Go to step 2.
+ * If an input source fired, deliver the event.
+ * If the run loop was explicitly woken up but has not yet timed out, restart the loop. Go to step 2.
+10. Notify observers that the run loop has exited.
+```
+> 用伪代码来表示就是:
+
+```
+{
+    /// 1. 通知Observers，即将进入RunLoop
+    /// 此处有Observer会创建AutoreleasePool: _objc_autoreleasePoolPush();
+    __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopEntry);
+    do {
+
+        /// 2. 通知 Observers: 即将触发 Timer 回调。
+        __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopBeforeTimers);
+        /// 3. 通知 Observers: 即将触发 Source (非基于port的,Source0) 回调。
+        __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopBeforeSources);
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK__(block);
+
+        /// 4. 触发 Source0 (非基于port的) 回调。
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE0_PERFORM_FUNCTION__(source0);
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_BLOCK__(block);
+
+        /// 6. 通知Observers，即将进入休眠
+        /// 此处有Observer释放并新建AutoreleasePool: _objc_autoreleasePoolPop(); _objc_autoreleasePoolPush();
+        __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopBeforeWaiting);
+
+        /// 7. sleep to wait msg.
+        mach_msg() -> mach_msg_trap();
+
+
+        /// 8. 通知Observers，线程被唤醒
+        __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopAfterWaiting);
+
+        /// 9. 如果是被Timer唤醒的，回调Timer
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_TIMER_CALLBACK_FUNCTION__(timer);
+
+        /// 9. 如果是被dispatch唤醒的，执行所有调用 dispatch_async 等方法放入main queue 的 block
+        __CFRUNLOOP_IS_SERVICING_THE_MAIN_DISPATCH_QUEUE__(dispatched_block);
+
+        /// 9. 如果如果Runloop是被 Source1 (基于port的) 的事件唤醒了，处理这个事件
+        __CFRUNLOOP_IS_CALLING_OUT_TO_A_SOURCE1_PERFORM_FUNCTION__(source1);
+
+
+    } while (...);
+
+    /// 10. 通知Observers，即将退出RunLoop
+    /// 此处有Observer释放AutoreleasePool: _objc_autoreleasePoolPop();
+    __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__(kCFRunLoopExit);
+}
+```
+如上所知,我们要检查主线程的卡顿情况,只需要给主线程添加一个observer,记录一下在某一次runloop中从**kCFRunLoopBeforeSources** 到 **kCFRunLoopBeforeWaiting** 花费的时间.如果超过了我们设定的阈值,就需要对这一次的调用栈信息进行打印或者上报,这样就实现了卡顿检测.
+
+> 做伪代码如下:
+
+```
+- (void)startWithInterval:(NSTimeInterval)interval andThreshold:(NSTimeInterval)threshold {
+	_interval = interval;
+   _threshold = threshold;
+   if _observer return;
+   _observer = ... // 此处初始化observer(CFRunLoopObserverRef)
+   callBack = {
+   		switch (activity) {
+            case kCFRunLoopEntry: {
+                
+                break;
+            }
+            case kCFRunLoopBeforeTimers: {
+                
+                break;
+            }
+            case kCFRunLoopBeforeSources: {
+                self->_startDate = [NSDate date];
+                self->_excuting = YES;
+                break;
+            }
+            case kCFRunLoopBeforeWaiting: {
+                self->_excuting = NO;
+                break;
+            }
+            case kCFRunLoopAfterWaiting: {
+                
+                break;
+            }
+            default:
+                break;
+        }
+   }
+   
+   CFRunLoopAddObserver(CFRunLoopGetCurrent(), _observer, kCFRunLoopCommonModes);
+    [self performSelector:@selector(addTimerToMonitorThread) onThread:_asyncThread withObject:nil waitUntilDone:NO modes:[NSArray arrayWithObject:NSRunLoopCommonModes]];
+}
+
+- (void)addTimerToMonitorThread {
+    if (_timer) {
+        return;
+    }
+    // 创建timer
+    _timer = CFRunLoopTimerCreateWithHandler(kCFAllocatorDefault, .1, _interval, 0, 0, ^(CFRunLoopTimerRef timer) {
+        if (!self->_excuting) {
+            return;
+        }
+        // 如果在这一次的runloop中执行状态还未结束的话,就计算一下这一次执行所占用主线程的时长,如果超过了阈值,那么就要打印对应的堆栈信息,或者做后台上报.
+        NSTimeInterval excuteTime = [[NSDate date] timeIntervalSinceDate:self->_startDate];
+        if (excuteTime >= self->_threshold) {
+            NSArray *syms = [NSThread  callStackSymbols];
+            if ([syms count] > 1) {
+                NSLog(@"<%@ %p> %@ - caller: %@ ", [self class], self, NSStringFromSelector(_cmd),[syms objectAtIndex:1]);
+            } else {
+                NSLog(@"<%@ %p> %@", [self class], self, NSStringFromSelector(_cmd));
+            }
+        }
+    });
+}
+
+```
