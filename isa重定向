@@ -1,0 +1,1 @@
+```object_setClass(obj,class)```方法可以重定向isa指针,Sets the class of an object(设置一个对象的类)
